@@ -1,0 +1,43 @@
+
+/mnt/data/libil2cpp.so:	file format elf64-littleaarch64
+
+Disassembly of section il2cpp:
+
+0000000005f4074c <__start_il2cpp>:
+ bcc7e94: d100c3ff     	sub	sp, sp, #0x30
+ bcc7e98: a90157fe     	stp	x30, x21, [sp, #0x10]
+ bcc7e9c: a9024ff4     	stp	x20, x19, [sp, #0x20]
+ bcc7ea0: f00102f5     	adrp	x21, 0xdd26000
+ bcc7ea4: 2a0103f4     	mov	w20, w1
+ bcc7ea8: aa0003f3     	mov	x19, x0
+ bcc7eac: 394a92a8     	ldrb	w8, [x21, #0x2a4]
+ bcc7eb0: 370000c8     	tbnz	w8, #0x0, 0xbcc7ec8 <__start_il2cpp+0x5d8777c>
+ bcc7eb4: f000c9e0     	adrp	x0, 0xd606000
+ bcc7eb8: f9400400     	ldr	x0, [x0, #0x8]
+ bcc7ebc: 96861490     	bl	0x5e4d0fc <.text+0x944bec>
+ bcc7ec0: 52800028     	mov	w8, #0x1                // =1
+ bcc7ec4: 390a92a8     	strb	w8, [x21, #0x2a4]
+ bcc7ec8: f9400e60     	ldr	x0, [x19, #0x18]
+ bcc7ecc: b9000fff     	str	wzr, [sp, #0xc]
+ bcc7ed0: b4000260     	cbz	x0, 0xbcc7f1c <__start_il2cpp+0x5d877d0>
+ bcc7ed4: f000c9e8     	adrp	x8, 0xd606000
+ bcc7ed8: 910033e2     	add	x2, sp, #0xc
+ bcc7edc: 2a1403e1     	mov	w1, w20
+ bcc7ee0: f9400508     	ldr	x8, [x8, #0x8]
+ bcc7ee4: f9400103     	ldr	x3, [x8]
+ bcc7ee8: 97ea7d72     	bl	0xb7674b0 <__start_il2cpp+0x5826d64>
+ bcc7eec: f9400a68     	ldr	x8, [x19, #0x10]
+ bcc7ef0: b4000168     	cbz	x8, 0xbcc7f1c <__start_il2cpp+0x5d877d0>
+ bcc7ef4: b9800fe9     	ldrsw	x9, [sp, #0xc]
+ bcc7ef8: b940190a     	ldr	w10, [x8, #0x18]
+ bcc7efc: 6b0a013f     	cmp	w9, w10
+ bcc7f00: 54000102     	b.hs	0xbcc7f20 <__start_il2cpp+0x5d877d4>
+ bcc7f04: 8b090d08     	add	x8, x8, x9, lsl #3
+ bcc7f08: a9424ff4     	ldp	x20, x19, [sp, #0x20]
+ bcc7f0c: a94157fe     	ldp	x30, x21, [sp, #0x10]
+ bcc7f10: f9401100     	ldr	x0, [x8, #0x20]
+ bcc7f14: 9100c3ff     	add	sp, sp, #0x30
+ bcc7f18: d65f03c0     	ret
+ bcc7f1c: 96861523     	bl	0x5e4d3a8 <.text+0x944e98>
+ bcc7f20: 96861524     	bl	0x5e4d3b0 <.text+0x944ea0>
+ bcc7f24: f81e0ffe     	str	x30, [sp, #-0x20]!

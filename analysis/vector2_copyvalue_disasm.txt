@@ -1,0 +1,12 @@
+
+/mnt/data/libil2cpp.so:	file format elf64-littleaarch64
+
+Disassembly of section il2cpp:
+
+0000000005f4074c <__start_il2cpp>:
+ bccaa40: b4000081     	cbz	x1, 0xbccaa50 <__start_il2cpp+0x5d8a304>
+ bccaa44: f8414028     	ldur	x8, [x1, #0x14]
+ bccaa48: f8014008     	stur	x8, [x0, #0x14]
+ bccaa4c: d65f03c0     	ret
+ bccaa50: f81f0ffe     	str	x30, [sp, #-0x10]!
+ bccaa54: 96860a55     	bl	0x5e4d3a8 <.text+0x944e98>
