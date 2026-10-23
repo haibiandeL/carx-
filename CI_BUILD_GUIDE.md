@@ -18,3 +18,10 @@
 4. 构建成功后，在该次运行页面底部的 **Artifacts** 下载 `carx-snow-slider-build`。
 
 如果你希望我直接把工作流推送到你的仓库，需要先连接/授权 GitHub，并提供目标仓库；我不能从当前对话直接假定有你的仓库写入权限。
+
+
+## 修复第一次构建失败（Android SDK 初始化）
+
+如果日志在“设置 Android SDK”处以 `sdkmanager` 退出码 1 失败，请使用本包更新后的 `.github/workflows/android-build.yml`：已将 `android-actions/setup-android@v3` 更新为 `@v4`，并只让该步骤安装 `platform-tools`，避免初始化阶段安装额外旧工具包。Android 平台、Build Tools 和 NDK 仍由下一步明确安装。
+
+把本包更新后的仓库文件上传/覆盖到 GitHub 仓库，然后打开 **Actions → Build CarX Snow Slider → Run workflow** 重新运行。若仍失败，请展开“Set up Android SDK”步骤，截取从 `Warning` 或 `Error` 首次出现处开始、往上约 20 行的日志；当前截图只有调用栈，无法确定底层 `sdkmanager` 的具体失败原因。
