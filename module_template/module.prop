@@ -1,0 +1,6 @@
+id=carx_snow_size
+name=CarX Street Snow Size Slider (Research)
+version=0.1-research
+versionCode=1
+author=OpenAI
+description=Research source package; not installable until the ARM64 Zygisk library is built and tested.
