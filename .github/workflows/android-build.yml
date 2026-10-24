@@ -1,0 +1,76 @@
+name: Build CarX Snow Slider
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [ main, master ]
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.9'
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v4
+        with:
+          packages: 'platform-tools'
+
+      - name: Install Android platform and NDK
+        run: |
+          sdkmanager --install "platforms;android-35" "build-tools;35.0.0" "ndk;27.2.12479018"
+          echo "ANDROID_NDK_HOME=$ANDROID_SDK_ROOT/ndk/27.2.12479018" >> "$GITHUB_ENV"
+
+      - name: Fetch official Zygisk module header
+        run: |
+          git clone --depth 1 https://github.com/topjohnwu/zygisk-module-sample.git "$RUNNER_TEMP/zygisk-module-sample"
+          test -f "$RUNNER_TEMP/zygisk-module-sample/module/jni/zygisk.hpp" || find "$RUNNER_TEMP/zygisk-module-sample" -name zygisk.hpp -print
+          HEADER="$(find "$RUNNER_TEMP/zygisk-module-sample" -name zygisk.hpp -print -quit)"
+          test -n "$HEADER"
+          mkdir -p "$RUNNER_TEMP/zygisk-include"
+          cp "$HEADER" "$RUNNER_TEMP/zygisk-include/zygisk.hpp"
+          echo "ZYGISK_INCLUDE_DIR=$RUNNER_TEMP/zygisk-include" >> "$GITHUB_ENV"
+
+      - name: Build Android controller APK
+        run: |
+          gradle --no-daemon --stacktrace assembleDebug
+
+      - name: Build ARM64 Zygisk library
+        run: |
+          chmod +x native/build_native.sh
+          ./native/build_native.sh
+
+      - name: Package research module ZIP
+        run: |
+          mkdir -p dist
+          cp app/build/outputs/apk/debug/app-debug.apk dist/CarX-Snow-Slider-debug.apk
+          cp module_template/module.prop dist/module.prop
+          mkdir -p dist/module/zygisk
+          cp module_template/zygisk/arm64-v8a.so dist/module/zygisk/arm64-v8a.so
+          cp module_template/module.prop dist/module/module.prop
+          (cd dist/module && zip -r ../CarX-Snow-Zygisk-ARM64.zip .)
+          sha256sum dist/* > dist/SHA256SUMS.txt
+
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: carx-snow-slider-build
+          path: dist/
+          if-no-files-found: error
+          retention-days: 14
