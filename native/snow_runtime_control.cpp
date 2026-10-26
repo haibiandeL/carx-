@@ -1,3 +1,4 @@
+#include <cstdint>
 // User-provided CarX Street 1.23 field info: RenderCore.Weather.icenessRoughnessWeight at field offset 0xA0.
 // This is the field offset within Weather, NOT a confirmed offset to the nested float value.
 // Do not raw-write the address until ClampedFloatParameterMod.m_Value is resolved via IL2CPP metadata.
