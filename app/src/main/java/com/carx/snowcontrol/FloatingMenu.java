@@ -363,8 +363,8 @@ public class FloatingMenu {
 
     private void buildCarXControls(Context context, LinearLayout host, float density, int accent, int cardColor, int strokeColor) {
         host.addView(createGroupTitle(context, "Weather & Time", accent, density));
-        host.addView(createBigButton(context, "☀ 天气预设", "晴天 / Halloween / Winter", accent, cardColor, strokeColor, density, v -> {
-            final String[] names = {"晴天", "Halloween", "Winter"};
+        host.addView(createBigButton(context, "☀ 天气预设", "晴天 / Halloween / Winter / 阴天 / 雨天", accent, cardColor, strokeColor, density, v -> {
+            final String[] names = {"晴天", "Halloween", "Winter", "阴天", "雨天"};
             new AlertDialog.Builder(context).setTitle("选择天气").setItems(names, (d, which) -> CarXControlFiles.write(context, "carx_snow_weather", String.valueOf(which))).show();
         }));
         host.addView(createBigButton(context, "◷ 游戏时间", "设置游戏内分钟数（0–1439）", accent, cardColor, strokeColor, density, v -> {
