@@ -1,6 +1,0 @@
-id=carx_snow_size
-name=CarX Street Snow Size Slider (Diagnostic Build)
-version=0.2-diagnostic
-versionCode=2
-author=OpenAI
-description=ARM64 Zygisk diagnostic build for CarX Street 1.23; runtime status reporting added, gameplay effect still requires device validation.
