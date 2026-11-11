@@ -1,0 +1,51 @@
+name: Build CarX PigHax B-Mode Zygisk Module
+on:
+  workflow_dispatch:
+  push:
+    branches: [ main, master ]
+permissions:
+  contents: read
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: android-actions/setup-android@v4
+      - name: Install NDK
+        run: |
+          sdkmanager --install "ndk;27.2.12479018"
+          echo "ANDROID_NDK_HOME=$ANDROID_SDK_ROOT/ndk/27.2.12479018" >> "$GITHUB_ENV"
+      - name: Get Zygisk header
+        run: |
+          git clone --depth 1 https://github.com/topjohnwu/zygisk-module-sample.git "$RUNNER_TEMP/zygisk"
+          H="$(find "$RUNNER_TEMP/zygisk" -name zygisk.hpp -print -quit)"
+          test -n "$H"
+          mkdir -p "$RUNNER_TEMP/zygisk-include"
+          cp "$H" "$RUNNER_TEMP/zygisk-include/zygisk.hpp"
+          echo "ZYGISK_INCLUDE_DIR=$RUNNER_TEMP/zygisk-include" >> "$GITHUB_ENV"
+      - name: Get ImGui and Dobby
+        run: |
+          git clone --depth 1 https://github.com/ocornut/imgui.git "$RUNNER_TEMP/imgui"
+          git clone https://github.com/jmpews/Dobby.git "$RUNNER_TEMP/Dobby"
+          git -C "$RUNNER_TEMP/Dobby" checkout 0932d69c320e786672361ab53825ba8f4245e9d3
+          echo "IMGUI_DIR=$RUNNER_TEMP/imgui" >> "$GITHUB_ENV"
+          echo "DOBBY_DIR=$RUNNER_TEMP/Dobby" >> "$GITHUB_ENV"
+      - name: Build ARM64 module
+        run: |
+          chmod +x native/build_native.sh
+          ./native/build_native.sh
+      - name: Package B-mode module only
+        run: |
+          set -euo pipefail
+          mkdir -p dist/module/zygisk
+          cp module_template/module.prop dist/module/module.prop
+          cp module_template/zygisk/arm64-v8a.so dist/module/zygisk/arm64-v8a.so
+          (cd dist/module && zip -r ../CarX-PigHax-B-Mode-Zygisk-ARM64.zip .)
+          sha256sum dist/CarX-PigHax-B-Mode-Zygisk-ARM64.zip > dist/SHA256SUMS.txt
+      - uses: actions/upload-artifact@v4
+        with:
+          name: carx-pighax-b-mode-zygisk
+          path: dist/
+          if-no-files-found: error
+          retention-days: 14
