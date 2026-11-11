@@ -1,0 +1,6 @@
+id=carx_pighax_b
+name=CarX PigHax B-Mode (Zygisk)
+version=0.3-b-diagnostic
+versionCode=3
+author=PigHax community
+description=ARM64 Zygisk in-game overlay build; no separate controller APK. Diagnostic source; verify on device.
