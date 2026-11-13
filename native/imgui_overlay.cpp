@@ -1,20 +1,16 @@
-// In-game Dear ImGui overlay for CarX Street (ARM64 / Android).
-// Render path: eglSwapBuffers + OpenGL ES 3. Input path: AInputQueue_getEvent.
-// This is a source integration; runtime compatibility must be checked on-device.
+// CarX Street B-mode ImGui overlay: EGL/GLES3 render-hook repair.
+// Input observation is optional and never gates render-hook installation.
 #include <android/log.h>
 #include <android/input.h>
-#include <android/looper.h>
 #include <dlfcn.h>
 #include <EGL/egl.h>
 #include <GLES3/gl3.h>
 #include <pthread.h>
 #include <unistd.h>
-#include <cerrno>
 #include <cstdarg>
 #include <sys/stat.h>
 #include <cstdio>
 #include <cstring>
-#include <algorithm>
 #include "imgui.h"
 #include "backends/imgui_impl_opengl3.h"
 #include "dobby.h"
@@ -27,8 +23,9 @@ using SwapFn = EGLBoolean (*)(EGLDisplay, EGLSurface);
 using GetEventFn = int (*)(AInputQueue*, AInputEvent**);
 SwapFn real_swap = nullptr;
 GetEventFn real_get_event = nullptr;
-pthread_mutex_t ui_mutex = PTHREAD_MUTEX_INITIALIZER;
 bool imgui_ready = false;
+bool render_hook_installed = false;
+bool input_hook_installed = false;
 bool menu_open = true;
 bool snow_enabled = true;
 int weather_index = 0;
@@ -40,14 +37,15 @@ void write_value(const char* path, const char* fmt, ...) {
     FILE* f = std::fopen(path, "w");
     if (!f) return;
     va_list ap; va_start(ap, fmt); std::vfprintf(f, fmt, ap); va_end(ap);
-    std::fputc('\n', f); std::fclose(f);
-    chmod(path, 0644);
+    std::fputc('\\n', f); std::fclose(f); chmod(path, 0644);
 }
 
 void draw_menu() {
     ImGuiIO& io = ImGui::GetIO();
     io.DisplaySize = ImVec2((float)surface_w, (float)surface_h);
+    ImGui_ImplOpenGL3_NewFrame();
     ImGui::NewFrame();
+
     if (menu_open) {
         ImGui::SetNextWindowPos(ImVec2(24, 48), ImGuiCond_Once);
         ImGui::SetNextWindowSize(ImVec2(430, 0), ImGuiCond_Once);
@@ -56,7 +54,8 @@ void draw_menu() {
         ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, 8.0f);
         ImGui::PushStyleColor(ImGuiCol_WindowBg, ImVec4(0.075f,0.08f,0.09f,0.96f));
         ImGui::PushStyleColor(ImGuiCol_Header, ImVec4(0.12f,0.27f,0.34f,1.0f));
-        ImGui::Begin("PigHax  |  CarX Street", &menu_open, ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoCollapse);
+        ImGui::Begin("PigHax  |  CarX Street", &menu_open,
+                     ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoCollapse);
         ImGui::TextDisabled("IN-GAME CONTROL PANEL");
         ImGui::Separator();
         if (ImGui::CollapsingHeader("Weather", ImGuiTreeNodeFlags_DefaultOpen)) {
@@ -83,7 +82,7 @@ void draw_menu() {
             ImGui::Text("Game time: %02d:%02d", game_minutes/60, game_minutes%60);
         }
         ImGui::Separator();
-        ImGui::TextDisabled("Tap the close button to hide; touch outside the panel passes to the game.");
+        ImGui::TextDisabled("B-mode render diagnostic");
         ImGui::End();
         ImGui::PopStyleColor(2);
         ImGui::PopStyleVar(2);
@@ -94,24 +93,28 @@ void draw_menu() {
 
 EGLBoolean hooked_swap(EGLDisplay display, EGLSurface surface) {
     if (!real_swap) return EGL_FALSE;
-    EGLint w=0,h=0;
-    eglQuerySurface(display, surface, EGL_WIDTH, &w);
-    eglQuerySurface(display, surface, EGL_HEIGHT, &h);
-    if (w > 0 && h > 0) { surface_w=w; surface_h=h; }
-    if (!imgui_ready && surface_w > 0 && surface_h > 0) {
-        IMGUI_CHECKVERSION(); ImGui::CreateContext();
-        ImGui::StyleColorsDark();
-        ImGuiIO& io=ImGui::GetIO(); io.IniFilename=nullptr; io.DisplaySize=ImVec2((float)surface_w,(float)surface_h);
-        if (ImGui_ImplOpenGL3_Init("#version 300 es")) { imgui_ready=true; LOGI("ImGui GLES3 initialized %dx%d",surface_w,surface_h); }
-        else LOGE("ImGui GLES3 init failed");
-    }
-    if (imgui_ready) {
-        GLint old_program=0, old_vao=0, old_array=0, old_element=0;
-        glGetIntegerv(GL_CURRENT_PROGRAM,&old_program); glGetIntegerv(GL_VERTEX_ARRAY_BINDING,&old_vao);
-        glGetIntegerv(GL_ARRAY_BUFFER_BINDING,&old_array); glGetIntegerv(GL_ELEMENT_ARRAY_BUFFER_BINDING,&old_element);
-        draw_menu();
-        glUseProgram((GLuint)old_program); glBindVertexArray((GLuint)old_vao);
-        glBindBuffer(GL_ARRAY_BUFFER,(GLuint)old_array); glBindBuffer(GL_ELEMENT_ARRAY_BUFFER,(GLuint)old_element);
+    if (eglGetCurrentContext() != EGL_NO_CONTEXT) {
+        EGLint w=0,h=0;
+        if (eglQuerySurface(display,surface,EGL_WIDTH,&w)==EGL_TRUE &&
+            eglQuerySurface(display,surface,EGL_HEIGHT,&h)==EGL_TRUE && w>0 && h>0) {
+            surface_w=w; surface_h=h;
+        }
+        if (!imgui_ready && surface_w>0 && surface_h>0) {
+            IMGUI_CHECKVERSION();
+            ImGui::CreateContext();
+            ImGui::StyleColorsDark();
+            ImGuiIO& io=ImGui::GetIO();
+            io.IniFilename=nullptr;
+            io.DisplaySize=ImVec2((float)surface_w,(float)surface_h);
+            if (ImGui_ImplOpenGL3_Init("#version 300 es")) {
+                imgui_ready=true;
+                LOGI("ImGui GLES3 initialized %dx%d",surface_w,surface_h);
+            } else {
+                LOGE("ImGui GLES3 initialization failed");
+                ImGui::DestroyContext();
+            }
+        }
+        if (imgui_ready) draw_menu();
     }
     return real_swap(display,surface);
 }
@@ -119,45 +122,63 @@ EGLBoolean hooked_swap(EGLDisplay display, EGLSurface surface) {
 int hooked_get_event(AInputQueue* queue, AInputEvent** event) {
     if (!real_get_event) return -1;
     int result=real_get_event(queue,event);
-    if (result < 0 || !event || !*event || !imgui_ready) return result;
+    if (result<0 || !event || !*event || !imgui_ready) return result;
     AInputEvent* e=*event;
     if (AInputEvent_getType(e)==AINPUT_EVENT_TYPE_MOTION) {
-        const int action=AMotionEvent_getAction(e)&AMOTION_EVENT_ACTION_MASK;
-        const float x=AMotionEvent_getX(e,0), y=AMotionEvent_getY(e,0);
+        int action=AMotionEvent_getAction(e)&AMOTION_EVENT_ACTION_MASK;
         ImGuiIO& io=ImGui::GetIO();
-        io.AddMousePosEvent(x,y);
+        io.AddMousePosEvent(AMotionEvent_getX(e,0),AMotionEvent_getY(e,0));
         if (action==AMOTION_EVENT_ACTION_DOWN) io.AddMouseButtonEvent(0,true);
-        if (action==AMOTION_EVENT_ACTION_UP || action==AMOTION_EVENT_ACTION_CANCEL) io.AddMouseButtonEvent(0,false);
-        // Consume touches only while they fall inside the menu's screen rectangle.
-        const bool inside = menu_open && x>=24 && x<=470 && y>=48 && y<=760;
-        if (inside && (action==AMOTION_EVENT_ACTION_DOWN || action==AMOTION_EVENT_ACTION_MOVE || action==AMOTION_EVENT_ACTION_UP)) {
-            AInputQueue_finishEvent(queue,e,1);
-            *event=nullptr;
-            return -EAGAIN;
-        }
+        if (action==AMOTION_EVENT_ACTION_UP || action==AMOTION_EVENT_ACTION_CANCEL)
+            io.AddMouseButtonEvent(0,false);
     }
+    // Do not consume or finish Unity's input event from this observer hook.
     return result;
 }
 
 void* hook_worker(void*) {
-    for (int i=0;i<90;i++) {
+    for (int i=0;i<120 && !render_hook_installed;i++) {
         void* egl=dlopen("libEGL.so",RTLD_NOW);
-        void* android=dlopen("libandroid.so",RTLD_NOW);
-        if (egl && android) {
+        if (egl) {
             void* swap=dlsym(egl,"eglSwapBuffers");
-            void* get_event=dlsym(android,"AInputQueue_getEvent");
-            if (swap && DobbyHook(swap,(void*)hooked_swap,(void**)&real_swap)==0) LOGI("eglSwapBuffers hook installed");
-            else LOGE("eglSwapBuffers hook failed");
-            if (get_event && DobbyHook(get_event,(void*)hooked_get_event,(void**)&real_get_event)==0) LOGI("AInputQueue_getEvent hook installed");
-            else LOGE("input hook failed; touch input may not be captured");
-            return nullptr;
+            if (swap) {
+                int rc=DobbyHook(swap,(void*)hooked_swap,(void**)&real_swap);
+                if (rc==0 && real_swap) {
+                    render_hook_installed=true;
+                    LOGI("eglSwapBuffers hook installed");
+                } else LOGE("eglSwapBuffers hook failed rc=%d",rc);
+            } else LOGE("eglSwapBuffers symbol not found");
+            dlclose(egl);
         }
-        sleep(1);
+        if (!render_hook_installed) sleep(1);
     }
-    LOGE("EGL/Android libraries not found"); return nullptr;
+    if (!render_hook_installed) LOGE("Render hook install timed out");
+
+    // Optional input observer: failure here does not affect rendering.
+    for (int i=0;i<120 && !input_hook_installed;i++) {
+        void* android=dlopen("libandroid.so",RTLD_NOW);
+        if (android) {
+            void* fn=dlsym(android,"AInputQueue_getEvent");
+            if (fn) {
+                int rc=DobbyHook(fn,(void*)hooked_get_event,(void**)&real_get_event);
+                if (rc==0 && real_get_event) {
+                    input_hook_installed=true;
+                    LOGI("AInputQueue_getEvent observer installed");
+                } else LOGE("Input observer hook failed rc=%d",rc);
+            } else LOGE("AInputQueue_getEvent symbol not found");
+            dlclose(android);
+        }
+        if (!input_hook_installed) sleep(1);
+    }
+    if (!input_hook_installed) LOGE("Input observer unavailable; renderer remains active");
+    return nullptr;
 }
 }
 
 extern "C" __attribute__((visibility("default"))) void carx_imgui_start() {
-    pthread_t t{}; if (pthread_create(&t,nullptr,hook_worker,nullptr)==0) pthread_detach(t);
+    pthread_t t{};
+    int rc=pthread_create(&t,nullptr,hook_worker,nullptr);
+    if (rc==0) { pthread_detach(t); LOGI("ImGui hook worker started"); }
+    else LOGE("ImGui hook worker creation failed rc=%d",rc);
 }
+
