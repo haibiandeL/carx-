@@ -7,6 +7,7 @@
 #define ZLOGE(...) __android_log_print(ANDROID_LOG_ERROR, "PigHaxDiag", __VA_ARGS__)
 
 extern "C" void carx_snow_start();
+extern "C" void carx_imgui_set_env(JNIEnv* env);
 extern "C" void carx_imgui_start();
 
 class CarXSnowModule final : public zygisk::ModuleBase {
@@ -37,7 +38,8 @@ public:
         env_->ReleaseStringUTFChars(args->nice_name, p);
 
         if (target) {
-            ZLOGI("target process matched; starting runtime and ImGui");
+            ZLOGI("target process matched; installing Unity input registration hook");
+            carx_imgui_set_env(env_);
             carx_snow_start();
             ZLOGI("carx_snow_start returned");
             carx_imgui_start();
