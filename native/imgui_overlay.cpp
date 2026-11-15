@@ -1,7 +1,8 @@
 // PigHax B-mode overlay for CarX Street 1.24
-// Stock Dear ImGui style. Touch input is tapped at UnityPlayer.nativeInjectEvent,
-// registered through JNI RegisterNatives. Touches inside the ImGui window are
-// consumed by the overlay; touches outside the window continue to Unity.
+// Complete replacement for native/imgui_overlay.cpp.
+// Uses stock Dear ImGui dark style. Touches inside the menu are consumed;
+// touches outside the menu continue to Unity.
+
 #include <jni.h>
 #include <android/log.h>
 #include <dlfcn.h>
@@ -17,6 +18,7 @@
 #include <deque>
 #include <mutex>
 #include <sys/stat.h>
+
 #include "imgui.h"
 #include "backends/imgui_impl_opengl3.h"
 #include "dobby.h"
@@ -35,20 +37,17 @@ NativeInjectEventFn real_native_inject_event = nullptr;
 void* egl_handle = nullptr;
 
 std::atomic<bool> render_hook_installed{false};
-std::atomic<bool> jni_hook_installed{false};
+std::atomic<bool> register_hook_installed{false};
+std::atomic<bool> native_input_hook_installed{false};
 std::atomic<bool> imgui_ready{false};
 std::atomic<int> surface_w{0}, surface_h{0};
 std::atomic<unsigned int> swap_count{0}, touch_count{0};
 
-std::atomic<float> menu_left{0.0f}, menu_top{0.0f}, menu_right{0.0f}, menu_bottom{0.0f};
+std::atomic<float> menu_left{0}, menu_top{0}, menu_right{0}, menu_bottom{0};
 std::atomic<bool> menu_rect_ready{false};
 std::atomic<bool> overlay_touch_captured{false};
 
-struct TouchEvent {
-    float x;
-    float y;
-    int button; // -1 = position only, 0 = release, 1 = press
-};
+struct TouchEvent { float x; float y; int button; };
 std::mutex touch_mutex;
 std::deque<TouchEvent> touch_events;
 
@@ -65,7 +64,10 @@ float particle_scale = 1.0f;
 
 void write_value(const char* path, const char* fmt, ...) {
     FILE* f = std::fopen(path, "w");
-    if (!f) return;
+    if (!f) {
+        LOGE("cannot write setting file: %s", path);
+        return;
+    }
     va_list ap;
     va_start(ap, fmt);
     std::vfprintf(f, fmt, ap);
@@ -87,7 +89,7 @@ void consume_touch_events(ImGuiIO& io) {
         std::lock_guard<std::mutex> lock(touch_mutex);
         local.swap(touch_events);
     }
-    for (const TouchEvent& e : local) {
+    for (const auto& e : local) {
         io.AddMousePosEvent(e.x, e.y);
         if (e.button >= 0) io.AddMouseButtonEvent(0, e.button != 0);
     }
@@ -95,10 +97,8 @@ void consume_touch_events(ImGuiIO& io) {
 
 bool point_inside_menu(float x, float y) {
     if (!menu_rect_ready.load(std::memory_order_acquire)) return false;
-    return x >= menu_left.load(std::memory_order_relaxed) &&
-           x <= menu_right.load(std::memory_order_relaxed) &&
-           y >= menu_top.load(std::memory_order_relaxed) &&
-           y <= menu_bottom.load(std::memory_order_relaxed);
+    return x >= menu_left.load() && x <= menu_right.load() &&
+           y >= menu_top.load() && y <= menu_bottom.load();
 }
 
 bool ensure_motion_event_cache(JNIEnv* env) {
@@ -109,6 +109,7 @@ bool ensure_motion_event_cache(JNIEnv* env) {
     jclass local = env->FindClass("android/view/MotionEvent");
     if (!local) {
         if (env->ExceptionCheck()) env->ExceptionClear();
+        LOGE("MotionEvent class lookup failed");
         return false;
     }
     jclass global = static_cast<jclass>(env->NewGlobalRef(local));
@@ -121,6 +122,7 @@ bool ensure_motion_event_cache(JNIEnv* env) {
     if (!action || !x || !y || env->ExceptionCheck()) {
         if (env->ExceptionCheck()) env->ExceptionClear();
         env->DeleteGlobalRef(global);
+        LOGE("MotionEvent method lookup failed");
         return false;
     }
     motion_event_class = global;
@@ -132,89 +134,107 @@ bool ensure_motion_event_cache(JNIEnv* env) {
 }
 
 jboolean JNICALL hooked_native_inject_event(JNIEnv* env, jclass clazz, jobject event) {
-    if (event && ensure_motion_event_cache(env) && env->IsInstanceOf(event, motion_event_class)) {
-        const jint action_full = env->CallIntMethod(event, motion_get_action);
-        const jfloat x = env->CallFloatMethod(event, motion_get_x);
-        const jfloat y = env->CallFloatMethod(event, motion_get_y);
+    if (event && ensure_motion_event_cache(env) &&
+        env->IsInstanceOf(event, motion_event_class)) {
+        jint full_action = env->CallIntMethod(event, motion_get_action);
+        jfloat x = env->CallFloatMethod(event, motion_get_x);
+        jfloat y = env->CallFloatMethod(event, motion_get_y);
         if (env->ExceptionCheck()) {
             env->ExceptionClear();
         } else {
-            const jint action = action_full & 0xff;
+            jint action = full_action & 0xff;
             bool captured = overlay_touch_captured.load(std::memory_order_acquire);
 
-            if (action == 0 /* ACTION_DOWN */) {
+            if (action == 0) { // ACTION_DOWN
                 captured = point_inside_menu(x, y);
                 overlay_touch_captured.store(captured, std::memory_order_release);
                 if (captured) enqueue_touch(x, y, 1);
             } else if (captured) {
-                if (action == 2 /* ACTION_MOVE */) {
-                    enqueue_touch(x, y, -1);
-                } else if (action == 1 /* ACTION_UP */ || action == 3 /* ACTION_CANCEL */) {
+                if (action == 2) enqueue_touch(x, y, -1); // ACTION_MOVE
+                else if (action == 1 || action == 3) {   // UP / CANCEL
                     enqueue_touch(x, y, 0);
                     overlay_touch_captured.store(false, std::memory_order_release);
                 }
             }
 
             if (captured) {
-                const unsigned int n = ++touch_count;
-                if (n == 1 || n == 20 || n == 100) {
-                    LOGI("Unity touch captured #%u action=%d x=%.1f y=%.1f", n, action, x, y);
-                }
-                return JNI_TRUE; // do not pass menu touches into the game
+                unsigned int n = ++touch_count;
+                if (n == 1 || n == 20 || n == 100)
+                    LOGI("menu touch captured #%u action=%d x=%.1f y=%.1f", n, action, x, y);
+                return JNI_TRUE;
             }
         }
     }
-
     return real_native_inject_event
         ? real_native_inject_event(env, clazz, event)
         : JNI_FALSE;
 }
 
+bool is_unity_player_class(JNIEnv* env, jclass clazz) {
+    // clazz is already the exact java.lang.Class object supplied to RegisterNatives.
+    // GetObjectClass(clazz) avoids FindClass() using the wrong application class loader.
+    jclass class_class = env->GetObjectClass(clazz);
+    if (!class_class) {
+        if (env->ExceptionCheck()) env->ExceptionClear();
+        return false;
+    }
+    jmethodID get_name = env->GetMethodID(class_class, "getName", "()Ljava/lang/String;");
+    if (!get_name || env->ExceptionCheck()) {
+        if (env->ExceptionCheck()) env->ExceptionClear();
+        env->DeleteLocalRef(class_class);
+        return false;
+    }
+    auto name = static_cast<jstring>(env->CallObjectMethod(clazz, get_name));
+    env->DeleteLocalRef(class_class);
+    if (!name || env->ExceptionCheck()) {
+        if (env->ExceptionCheck()) env->ExceptionClear();
+        if (name) env->DeleteLocalRef(name);
+        return false;
+    }
+    const char* utf = env->GetStringUTFChars(name, nullptr);
+    bool match = utf && std::strcmp(utf, "com.unity3d.player.UnityPlayer") == 0;
+    if (utf) env->ReleaseStringUTFChars(name, utf);
+    env->DeleteLocalRef(name);
+    return match;
+}
+
 jint JNICALL hooked_register_natives(JNIEnv* env, jclass clazz,
                                      const JNINativeMethod* methods, jint count) {
-    if (!real_register_natives || !methods || count <= 0) {
-        return real_register_natives ? real_register_natives(env, clazz, methods, count) : JNI_ERR;
-    }
+    if (!real_register_natives || !methods || count <= 0)
+        return real_register_natives
+            ? real_register_natives(env, clazz, methods, count) : JNI_ERR;
 
-    int target_index = -1;
+    int target = -1;
     for (jint i = 0; i < count; ++i) {
         if (methods[i].name && methods[i].signature &&
             std::strcmp(methods[i].name, "nativeInjectEvent") == 0 &&
             std::strcmp(methods[i].signature, "(Landroid/view/InputEvent;)Z") == 0) {
-            target_index = i;
+            target = i;
             break;
         }
     }
-
-    if (target_index < 0) return real_register_natives(env, clazz, methods, count);
-
-    jclass unity_player = env->FindClass("com/unity3d/player/UnityPlayer");
-    if (!unity_player) {
-        if (env->ExceptionCheck()) env->ExceptionClear();
-        LOGE("UnityPlayer class lookup failed while registering nativeInjectEvent");
+    if (target < 0 || !is_unity_player_class(env, clazz))
         return real_register_natives(env, clazz, methods, count);
-    }
-    const bool is_unity_player = env->IsSameObject(clazz, unity_player);
-    env->DeleteLocalRef(unity_player);
-    if (!is_unity_player) return real_register_natives(env, clazz, methods, count);
 
     std::vector<JNINativeMethod> patched(methods, methods + count);
-    real_native_inject_event = reinterpret_cast<NativeInjectEventFn>(patched[target_index].fnPtr);
-    patched[target_index].fnPtr = reinterpret_cast<void*>(hooked_native_inject_event);
+    real_native_inject_event =
+        reinterpret_cast<NativeInjectEventFn>(patched[target].fnPtr);
+    patched[target].fnPtr = reinterpret_cast<void*>(hooked_native_inject_event);
 
-    const jint result = real_register_natives(env, clazz, patched.data(), count);
-    if (result == JNI_OK) {
+    jint rc = real_register_natives(env, clazz, patched.data(), count);
+    if (rc == JNI_OK) {
+        native_input_hook_installed.store(true, std::memory_order_release);
         LOGI("UnityPlayer.nativeInjectEvent hook registered successfully");
     } else {
-        LOGE("RegisterNatives for UnityPlayer failed rc=%d", result);
+        LOGE("UnityPlayer RegisterNatives failed rc=%d", rc);
     }
-    return result;
+    return rc;
 }
 
 void draw_menu() {
     ImGuiIO& io = ImGui::GetIO();
-    const int w = surface_w.load(std::memory_order_relaxed);
-    const int h = surface_h.load(std::memory_order_relaxed);
+    int w = surface_w.load();
+    int h = surface_h.load();
     io.DisplaySize = ImVec2((float)w, (float)h);
     consume_touch_events(io);
 
@@ -222,22 +242,22 @@ void draw_menu() {
     ImGui::NewFrame();
 
     if (w > 0 && h > 0) {
-        const float panel_w = (float)w * 0.78f;
-        const float final_w = panel_w < 900.0f ? panel_w : 900.0f;
-        ImGui::SetNextWindowPos(ImVec2((float)w * 0.035f, (float)h * 0.06f), ImGuiCond_Once);
+        float panel_w = (float)w * 0.78f;
+        float final_w = panel_w < 900.0f ? panel_w : 900.0f;
+        ImGui::SetNextWindowPos(ImVec2((float)w * 0.035f, (float)h * 0.06f),
+                                ImGuiCond_Once);
         ImGui::SetNextWindowSize(ImVec2(final_w, 0.0f), ImGuiCond_Once);
-
         ImGui::Begin("PigHax | CarX Street", nullptr,
                      ImGuiWindowFlags_AlwaysAutoResize |
                      ImGuiWindowFlags_NoCollapse |
                      ImGuiWindowFlags_NoSavedSettings);
 
-        const ImVec2 pos = ImGui::GetWindowPos();
-        const ImVec2 size = ImGui::GetWindowSize();
-        menu_left.store(pos.x, std::memory_order_relaxed);
-        menu_top.store(pos.y, std::memory_order_relaxed);
-        menu_right.store(pos.x + size.x, std::memory_order_relaxed);
-        menu_bottom.store(pos.y + size.y, std::memory_order_relaxed);
+        ImVec2 pos = ImGui::GetWindowPos();
+        ImVec2 size = ImGui::GetWindowSize();
+        menu_left.store(pos.x);
+        menu_top.store(pos.y);
+        menu_right.store(pos.x + size.x);
+        menu_bottom.store(pos.y + size.y);
         menu_rect_ready.store(true, std::memory_order_release);
 
         ImGui::TextDisabled("IN-GAME CONTROL PANEL");
@@ -245,18 +265,15 @@ void draw_menu() {
 
         if (ImGui::CollapsingHeader("Weather", ImGuiTreeNodeFlags_DefaultOpen)) {
             const char* weather[] = {"Generic", "Halloween", "Winter", "Cloudy", "Rainy"};
-            if (ImGui::Combo("Weather preset", &weather_index, weather, IM_ARRAYSIZE(weather))) {
+            if (ImGui::Combo("Weather preset", &weather_index, weather, IM_ARRAYSIZE(weather)))
                 write_value("/data/local/tmp/carx_snow_weather", "%d", weather_index);
-            }
         }
 
         if (ImGui::CollapsingHeader("Snow", ImGuiTreeNodeFlags_DefaultOpen)) {
-            if (ImGui::Checkbox("Snow weather / particles", &snow_enabled)) {
+            if (ImGui::Checkbox("Snow weather / particles", &snow_enabled))
                 write_value("/data/local/tmp/carx_snow_enabled", "%d", snow_enabled ? 1 : 0);
-            }
-            if (ImGui::SliderFloat("Rain + snowflake size", &particle_scale, 0.25f, 3.0f, "%.2fx")) {
+            if (ImGui::SliderFloat("Rain + snowflake size", &particle_scale, 0.25f, 3.0f, "%.2fx"))
                 write_value("/data/local/tmp/carx_snow_multiplier", "%.3f", particle_scale);
-            }
         }
 
         if (ImGui::CollapsingHeader("Time")) {
@@ -272,7 +289,6 @@ void draw_menu() {
             }
             ImGui::Text("Game time: %02d:%02d", game_minutes / 60, game_minutes % 60);
         }
-
         ImGui::End();
     } else {
         menu_rect_ready.store(false, std::memory_order_release);
@@ -284,15 +300,16 @@ void draw_menu() {
 
 EGLBoolean hooked_swap(EGLDisplay display, EGLSurface surface) {
     if (!real_swap) return EGL_FALSE;
-    const unsigned int n = ++swap_count;
+    unsigned int n = ++swap_count;
     if (n == 1 || n == 1200) LOGI("eglSwapBuffers callback active count=%u", n);
 
     if (eglGetCurrentContext() != EGL_NO_CONTEXT) {
         EGLint w = 0, h = 0;
         if (eglQuerySurface(display, surface, EGL_WIDTH, &w) == EGL_TRUE &&
-            eglQuerySurface(display, surface, EGL_HEIGHT, &h) == EGL_TRUE && w > 0 && h > 0) {
-            surface_w.store(w, std::memory_order_relaxed);
-            surface_h.store(h, std::memory_order_relaxed);
+            eglQuerySurface(display, surface, EGL_HEIGHT, &h) == EGL_TRUE &&
+            w > 0 && h > 0) {
+            surface_w.store(w);
+            surface_h.store(h);
         }
 
         if (!imgui_ready.load(std::memory_order_acquire) &&
@@ -303,10 +320,9 @@ EGLBoolean hooked_swap(EGLDisplay display, EGLSurface surface) {
             ImGuiIO& io = ImGui::GetIO();
             io.IniFilename = nullptr;
             io.DisplaySize = ImVec2((float)surface_w.load(), (float)surface_h.load());
-
             if (ImGui_ImplOpenGL3_Init("#version 300 es")) {
                 imgui_ready.store(true, std::memory_order_release);
-                LOGI("Stock ImGui dark style initialized; surface=%dx%d",
+                LOGI("Stock ImGui initialized surface=%dx%d",
                      surface_w.load(), surface_h.load());
             } else {
                 LOGE("ImGui GLES3 initialization failed");
@@ -322,21 +338,28 @@ bool try_install_render_hook() {
     if (render_hook_installed.load()) return true;
     if (!egl_handle) egl_handle = dlopen("libEGL.so", RTLD_NOW | RTLD_NOLOAD);
     if (!egl_handle) egl_handle = dlopen("libEGL.so", RTLD_NOW);
-    if (!egl_handle) return false;
-
-    void* swap = dlsym(egl_handle, "eglSwapBuffers");
-    if (!swap) swap = dlsym(RTLD_DEFAULT, "eglSwapBuffers");
-    if (!swap) {
-        using GetProcFn = __eglMustCastToProperFunctionPointerType (*)(const char*);
-        auto gp = reinterpret_cast<GetProcFn>(dlsym(egl_handle, "eglGetProcAddress"));
-        if (gp) swap = reinterpret_cast<void*>(gp("eglSwapBuffers"));
+    if (!egl_handle) {
+        LOGE("dlopen libEGL.so failed: %s", dlerror());
+        return false;
     }
-    if (!swap) return false;
 
-    const int rc = DobbyHook(swap, reinterpret_cast<void*>(hooked_swap),
-                             reinterpret_cast<void**>(&real_swap));
+    void* target = dlsym(egl_handle, "eglSwapBuffers");
+    if (!target) target = dlsym(RTLD_DEFAULT, "eglSwapBuffers");
+    if (!target) {
+        using GetProcFn = __eglMustCastToProperFunctionPointerType (*)(const char*);
+        auto get_proc = reinterpret_cast<GetProcFn (*)(const char*)>(
+            dlsym(egl_handle, "eglGetProcAddress"));
+        if (get_proc) target = reinterpret_cast<void*>(get_proc("eglSwapBuffers"));
+    }
+    if (!target) {
+        LOGE("eglSwapBuffers symbol not found");
+        return false;
+    }
+
+    int rc = DobbyHook(target, reinterpret_cast<void*>(hooked_swap),
+                       reinterpret_cast<void**>(&real_swap));
     if (rc == 0 && real_swap) {
-        render_hook_installed.store(true);
+        render_hook_installed.store(true, std::memory_order_release);
         LOGI("eglSwapBuffers hook installed");
         return true;
     }
@@ -347,49 +370,53 @@ bool try_install_render_hook() {
 void* hook_worker(void*) {
     LOGI("Render hook worker entered");
     for (int i = 0; i < 300; ++i) {
-        const bool render_ok = try_install_render_hook();
-        if (render_ok) break;
-        if (i == 0 || i == 9 || i == 29 || i == 59 || i == 119 || i == 179 || i == 239 || i == 299)
-            LOGI("render hook retry=%d installed=%d", i + 1, render_ok ? 1 : 0);
+        if (try_install_render_hook()) break;
+        if (i == 0 || i == 9 || i == 29 || i == 59 ||
+            i == 119 || i == 179 || i == 239 || i == 299)
+            LOGI("render hook retry=%d", i + 1);
         sleep(1);
     }
-    LOGI("hook worker finished render=%d jni_input=%d",
-         render_hook_installed.load() ? 1 : 0, jni_hook_installed.load() ? 1 : 0);
-    if (!render_hook_installed.load()) LOGE("render hook timed out; overlay cannot be drawn");
-    if (!jni_hook_installed.load()) LOGE("Unity nativeInjectEvent hook not installed; touch is not available");
+    LOGI("hook worker finished render=%d register=%d input=%d",
+         render_hook_installed.load() ? 1 : 0,
+         register_hook_installed.load() ? 1 : 0,
+         native_input_hook_installed.load() ? 1 : 0);
+    if (!render_hook_installed.load())
+        LOGE("render hook timed out; overlay cannot be drawn");
+    if (!native_input_hook_installed.load())
+        LOGE("Unity nativeInjectEvent was not intercepted; touch may not work");
     return nullptr;
 }
 } // namespace
 
-extern "C" __attribute__((visibility("default"))) void carx_imgui_set_env(JNIEnv* env) {
-    if (!env || jni_hook_installed.load(std::memory_order_acquire)) return;
-    void* register_natives = reinterpret_cast<void*>(env->functions->RegisterNatives);
-    if (!register_natives) {
+extern "C" __attribute__((visibility("default")))
+void carx_imgui_set_env(JNIEnv* env) {
+    if (!env || register_hook_installed.load(std::memory_order_acquire)) return;
+    void* target = reinterpret_cast<void*>(env->functions->RegisterNatives);
+    if (!target) {
         LOGE("JNI RegisterNatives pointer unavailable");
         return;
     }
-    const int rc = DobbyHook(register_natives, reinterpret_cast<void*>(hooked_register_natives),
-                             reinterpret_cast<void**>(&real_register_natives));
+    int rc = DobbyHook(target, reinterpret_cast<void*>(hooked_register_natives),
+                       reinterpret_cast<void**>(&real_register_natives));
     if (rc == 0 && real_register_natives) {
-        jni_hook_installed.store(true, std::memory_order_release);
-        LOGI("JNI RegisterNatives hook installed before Unity startup");
+        register_hook_installed.store(true, std::memory_order_release);
+        LOGI("JNI RegisterNatives hook installed");
     } else {
         LOGE("JNI RegisterNatives hook failed rc=%d", rc);
     }
 }
 
-extern "C" __attribute__((visibility("default"))) void carx_imgui_start() {
+extern "C" __attribute__((visibility("default")))
+void carx_imgui_start() {
     static std::atomic<bool> started{false};
     bool expected = false;
-    if (!started.compare_exchange_strong(expected, true)) {
-        LOGI("carx_imgui_start called again; worker already started");
-        return;
-    }
+    if (!started.compare_exchange_strong(expected, true)) return;
+
     LOGI("carx_imgui_start entered");
-    pthread_t t{};
-    const int rc = pthread_create(&t, nullptr, hook_worker, nullptr);
+    pthread_t thread{};
+    int rc = pthread_create(&thread, nullptr, hook_worker, nullptr);
     if (rc == 0) {
-        pthread_detach(t);
+        pthread_detach(thread);
         LOGI("render hook worker thread created");
     } else {
         started.store(false);
