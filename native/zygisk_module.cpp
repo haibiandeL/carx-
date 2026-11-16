@@ -3,59 +3,58 @@
 #include <cstring>
 #include <zygisk.hpp>
 
-#define ZLOGI(...) __android_log_print(ANDROID_LOG_INFO, "PigHaxDiag", __VA_ARGS__)
-#define ZLOGE(...) __android_log_print(ANDROID_LOG_ERROR, "PigHaxDiag", __VA_ARGS__)
+#define LOGI(...) __android_log_print(ANDROID_LOG_INFO, "PigHax", __VA_ARGS__)
+#define LOGE(...) __android_log_print(ANDROID_LOG_ERROR, "PigHax", __VA_ARGS__)
 
 extern "C" void carx_snow_start();
-extern "C" void carx_imgui_set_env(JNIEnv* env);
+extern "C" void carx_imgui_set_env(JNIEnv *);
 extern "C" void carx_imgui_start();
 
-class CarXSnowModule final : public zygisk::ModuleBase {
+class PigHaxModule final : public zygisk::ModuleBase {
 public:
-    void onLoad(zygisk::Api* api, JNIEnv* env) override {
+    void onLoad(zygisk::Api *api, JNIEnv *env) override {
         api_ = api;
         env_ = env;
-        ZLOGI("Zygisk onLoad reached");
+        LOGI("module loaded");
     }
 
-    void postAppSpecialize(const zygisk::AppSpecializeArgs* args) override {
-        ZLOGI("postAppSpecialize entered");
+    void postAppSpecialize(const zygisk::AppSpecializeArgs *args) override {
         if (!api_ || !env_ || !args || !args->nice_name) {
-            ZLOGE("specialize args/api/env missing; closing module");
-            closeModule();
+            LOGE("missing specialize arguments");
+            close_module();
             return;
         }
 
-        const char* p = env_->GetStringUTFChars(args->nice_name, nullptr);
-        if (!p) {
-            ZLOGE("GetStringUTFChars failed; closing module");
-            closeModule();
+        const char *name = env_->GetStringUTFChars(args->nice_name, nullptr);
+        if (!name) {
+            if (env_->ExceptionCheck()) env_->ExceptionClear();
+            close_module();
             return;
         }
 
-        ZLOGI("specialized process nice_name=%s", p);
-        const bool target = std::strcmp(p, "com.carxtech.sr") == 0;
-        env_->ReleaseStringUTFChars(args->nice_name, p);
+        const bool target = std::strcmp(name, "com.carxtech.sr") == 0;
+        LOGI("specialized process: %s", name);
+        env_->ReleaseStringUTFChars(args->nice_name, name);
 
-        if (target) {
-            ZLOGI("target process matched; installing Unity input registration hook");
-            carx_imgui_set_env(env_);
-            carx_snow_start();
-            ZLOGI("carx_snow_start returned");
-            carx_imgui_start();
-            ZLOGI("carx_imgui_start returned");
-        } else {
-            ZLOGI("non-target process; unloading module");
-            closeModule();
+        if (!target) {
+            close_module();
+            return;
         }
+
+        LOGI("CarX Street matched; starting B mode");
+        carx_imgui_set_env(env_);
+        carx_snow_start();
+        carx_imgui_start();
+        LOGI("B-mode startup calls dispatched");
     }
 
 private:
-    void closeModule() {
+    void close_module() {
         if (api_) api_->setOption(zygisk::Option::DLCLOSE_MODULE_LIBRARY);
     }
-    zygisk::Api* api_ = nullptr;
-    JNIEnv* env_ = nullptr;
+
+    zygisk::Api *api_ = nullptr;
+    JNIEnv *env_ = nullptr;
 };
 
-REGISTER_ZYGISK_MODULE(CarXSnowModule)
+REGISTER_ZYGISK_MODULE(PigHaxModule)
