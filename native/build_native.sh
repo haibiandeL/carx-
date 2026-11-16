@@ -7,6 +7,7 @@ set -euo pipefail
 HOST_TAG=linux-x86_64
 TOOLCHAIN="$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/$HOST_TAG/bin"
 CXX="$TOOLCHAIN/aarch64-linux-android29-clang++"
+READELF="$TOOLCHAIN/llvm-readelf"
 OUT="$(cd "$(dirname "$0")/.." && pwd)/module_template/zygisk/arm64-v8a.so"
 DOBBY_LIB="$DOBBY_DIR/cmake-build-android/libdobby.a"
 test -x "$CXX"
@@ -23,6 +24,15 @@ IMGUI_SRC=("$IMGUI_DIR/imgui.cpp" "$IMGUI_DIR/imgui_draw.cpp" "$IMGUI_DIR/imgui_
 "$CXX" -std=c++17 -O2 -fPIC -shared -fvisibility=hidden \
   -I"$ZYGISK_INCLUDE_DIR" -I"$IMGUI_DIR" -I"$IMGUI_DIR/backends" -I"$DOBBY_DIR/include" \
   native/zygisk_module.cpp native/snow_runtime_control.cpp native/imgui_overlay.cpp "${IMGUI_SRC[@]}" \
-  "$DOBBY_LIB" -o "$OUT" -landroid -lEGL -lGLESv3 -ldl -llog -pthread
+  "$DOBBY_LIB" -o "$OUT" -landroid -lEGL -lGLESv3 -ldl -llog -pthread \
+  -static-libstdc++
 test -s "$OUT"
-echo "Built: $OUT"
+
+# ZygiskNext's preload linker cannot rely on the target app providing
+# libc++_shared.so. Ensure the module is self-contained with respect to libc++.
+if "$READELF" -d "$OUT" | grep -q 'NEEDED.*libc++_shared\.so'; then
+  echo "ERROR: module still depends on libc++_shared.so; refusing to package." >&2
+  exit 1
+fi
+
+echo "Built and checked: $OUT"
