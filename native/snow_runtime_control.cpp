@@ -27,7 +27,7 @@ static ThreadAttach thread_attach = nullptr;
 void write_status(const char *value) {
     FILE *f = std::fopen("/data/local/tmp/carx_snow_status", "w");
     if (!f) return;
-    std::fprintf(f, "%s\n", value);
+    std::fprintf(f, "%s\\n", value);
     std::fclose(f);
     chmod("/data/local/tmp/carx_snow_status", 0644);
 }
@@ -41,7 +41,13 @@ bool resolve_il2cpp() {
 }
 
 void *runtime_worker(void *) {
-    write_status("PigHax runtime worker started");
+    write_status("PigHax runtime worker started; delaying initialization for 10 seconds");
+    SLOGI("10-second delayed initialization started");
+
+    // Restore the original startup delay before resolving IL2CPP.
+    sleep(10);
+
+    SLOGI("10-second delay finished; resolving IL2CPP API");
     while (!resolve_il2cpp()) {
         write_status("Waiting for libil2cpp.so");
         sleep(1);
